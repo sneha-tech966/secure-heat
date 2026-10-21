@@ -1,0 +1,102 @@
+# Secure-Heat stack. Secrets come from .env (create it with: sh scripts/generate-env.sh). Nothing secret is baked into images.
+name: secure-heat
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    # not published: only reachable from other services on the compose network
+
+  ml-service:
+    build: ./ml-service
+    restart: unless-stopped
+    environment:
+      ML_INTERNAL_TOKEN: ${ML_INTERNAL_TOKEN:?set ML_INTERNAL_TOKEN in .env}
+      FLAG_THRESHOLD: ${FLAG_THRESHOLD:-0.99}
+      QUARANTINE_THRESHOLD: ${QUARANTINE_THRESHOLD:-0.999}
+      TRUSTED_MAX_AGE_MIN: ${TRUSTED_MAX_AGE_MIN:-60}
+      REPEAT_LIMIT: ${REPEAT_LIMIT:-3}
+    # not published: only the backend calls it
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ml-service:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}          # set to "production" behind TLS (forces Secure cookies)
+      PORT: "4000"
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXPIRES_SECONDS: ${JWT_EXPIRES_SECONDS:-3600}
+      SENSOR_SECRET_ENC_KEY: ${SENSOR_SECRET_ENC_KEY:?set SENSOR_SECRET_ENC_KEY in .env}
+      # Browser origin(s) of the frontend container. Deliberately NOT read from CORS_ORIGIN, which .env.example sets to the Vite dev server (:5173) for manual runs.
+      CORS_ORIGIN: ${DOCKER_CORS_ORIGIN:-http://localhost:8080,http://127.0.0.1:8080}
+      TRUST_PROXY: "true"                         # behind the nginx container
+      ML_SERVICE_URL: http://ml-service:8000
+      ML_INTERNAL_TOKEN: ${ML_INTERNAL_TOKEN}
+      ML_FAIL_MODE: ${ML_FAIL_MODE:-quarantine}
+      RANGE_VIOLATION_ACTION: ${RANGE_VIOLATION_ACTION:-quarantine}
+      FLAG_THRESHOLD: ${FLAG_THRESHOLD:-0.99}
+      QUARANTINE_THRESHOLD: ${QUARANTINE_THRESHOLD:-0.999}
+      TIMESTAMP_WINDOW_SECONDS: ${TIMESTAMP_WINDOW_SECONDS:-120}
+      RATE_LIMIT_MAX: ${RATE_LIMIT_MAX:-300}
+      AUTH_RATE_LIMIT_MAX: ${AUTH_RATE_LIMIT_MAX:-10}
+      INGEST_RATE_LIMIT_MAX: ${INGEST_RATE_LIMIT_MAX:-600}
+      FORECASTING_URL: ${FORECASTING_URL:-}
+      FORECASTING_TOKEN: ${FORECASTING_TOKEN:-}
+      SIMULATOR_URL: http://sensor-simulator:5055
+      SIMULATOR_TOKEN: ${SIM_CONTROL_TOKEN:?set SIM_CONTROL_TOKEN in .env}
+      SEED_ON_START: ${SEED_ON_START:-true}       # demo data; set false for anything real
+      SEED_ADMIN_EMAIL: ${SEED_ADMIN_EMAIL:-}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      SEED_ANALYST_EMAIL: ${SEED_ANALYST_EMAIL:-}
+      SEED_ANALYST_PASSWORD: ${SEED_ANALYST_PASSWORD:-}
+      SEED_VIEWER_EMAIL: ${SEED_VIEWER_EMAIL:-}
+      SEED_VIEWER_PASSWORD: ${SEED_VIEWER_PASSWORD:-}
+      SENSOR_CREDENTIALS_PATH: /creds/credentials.json
+    volumes:
+      - creds:/creds
+    ports:
+      - "127.0.0.1:4000:4000"                     # loopback only, for curl/debugging; the browser uses the frontend on :8080
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  sensor-simulator:
+    build: ./sensor-simulator
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy                # the seed (which writes the credentials) runs before the API becomes healthy
+    environment:
+      BACKEND_URL: http://backend:4000
+      SENSOR_CREDENTIALS_PATH: /creds/credentials.json
+      SIM_CONTROL_TOKEN: ${SIM_CONTROL_TOKEN:?set SIM_CONTROL_TOKEN in .env}
+    volumes:
+      - creds:/creds:ro
+    # control API (5055) is not published; the backend proxies it after authentication and role checks
+
+volumes:
+  pgdata:
+  creds:

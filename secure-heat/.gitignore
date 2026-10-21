@@ -1,0 +1,22 @@
+node_modules/
+dist/
+.env
+*.pem
+__pycache__/
+.venv/
+*.pyc
+ml-service/models/*.joblib
+postgres-data/
+coverage/
+sensor-simulator/credentials.json
+backend/dist/
+
+# Docker / generated
+.env
+ml-service/data/*.csv
+ml-service/models/*.json
+ml-service/models/*.joblib
+frontend/dist/
+backend/node_modules/
+frontend/node_modules/
+sensor-simulator/.sim_state.json

@@ -1,0 +1,205 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  SECURITY_ANALYST
+  VIEWER
+}
+enum SensorStatus {
+  ACTIVE
+  INACTIVE
+  SUSPICIOUS
+  BLOCKED
+}
+enum ProcessingStatus {
+  PENDING
+  AUTHENTICATED
+  FORWARDED
+  QUARANTINED
+  REJECTED
+}
+enum Decision {
+  ACCEPT
+  FLAG
+  QUARANTINE
+  REJECT
+}
+enum AnomalyStatus {
+  NORMAL
+  ANOMALY
+  UNKNOWN
+}
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+enum EventStatus {
+  OPEN
+  INVESTIGATING
+  RESOLVED
+}
+enum EventType {
+  AUTHENTICATION_FAILURE
+  INVALID_SIGNATURE
+  REPLAY_ATTACK
+  INVALID_TELEMETRY
+  RULE_VIOLATION
+  ANOMALOUS_TELEMETRY
+  REPEATED_READINGS
+  SENSOR_DRIFT
+  BLOCKED_SENSOR
+  ML_SERVICE_FAILURE
+  SENSOR_FLAGGED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(VIEWER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  investigatedEvents SecurityEvent[] @relation("EventInvestigator")
+  reviewedTelemetry  Telemetry[]     @relation("TelemetryReviewer")
+  auditLogs          AuditLog[]
+}
+
+model Sensor {
+  id           String       @id @default(cuid())
+  sensorId     String       @unique
+  name         String
+  location     String
+  latitude     Float?
+  longitude    Float?
+  /// SHA-256 of the 256-bit random API key. The raw key is shown once and never stored.
+  apiKeyHash   String
+  /// AES-256-GCM encrypted HMAC secret (needs to be recoverable for verification). Never returned by any API.
+  secretKey    String
+  status       SensorStatus @default(ACTIVE)
+  lastSeen     DateTime?
+  registeredAt DateTime     @default(now())
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  telemetry     Telemetry[]
+  events        SecurityEvent[]
+  replayRecords ReplayRecord[]
+
+  @@index([status])
+}
+
+model Telemetry {
+  id               String           @id @default(cuid())
+  sensorId         String
+  sensor           Sensor           @relation(fields: [sensorId], references: [sensorId], onDelete: Restrict)
+  sequenceNumber   Int
+  temperature      Float
+  humidity         Float
+  pressure         Float
+  windSpeed        Float
+  windDirection    Float
+  rainfall         Float
+  solarRadiation   Float
+  timestamp        DateTime
+  receivedAt       DateTime         @default(now())
+  signatureValid   Boolean
+  /// Percentile (0-1) of the reading's score among clean calibration scores. NOT a probability. Null if ML was not consulted.
+  anomalyScore     Float?
+  anomalyStatus    AnomalyStatus    @default(UNKNOWN)
+  processingStatus ProcessingStatus @default(PENDING)
+  decision         Decision
+  rulesTriggered   Json             @default("[]")
+  explanation      String?
+  reviewedById     String?
+  reviewedBy       User?            @relation("TelemetryReviewer", fields: [reviewedById], references: [id])
+  reviewedAt       DateTime?
+  reviewNotes      String?
+  createdAt        DateTime         @default(now())
+
+  events SecurityEvent[]
+
+  @@index([sensorId, timestamp])
+  @@index([processingStatus, timestamp])
+  @@index([receivedAt])
+}
+
+model SecurityEvent {
+  id               String      @id @default(cuid())
+  eventType        EventType
+  severity         Severity
+  description      String
+  sensorId         String?
+  sensor           Sensor?     @relation(fields: [sensorId], references: [sensorId], onDelete: SetNull)
+  /// Sensor id claimed by an unauthenticated request (may not exist).
+  claimedSensorId  String?
+  telemetryId      String?
+  telemetry        Telemetry?  @relation(fields: [telemetryId], references: [id], onDelete: SetNull)
+  sourceIP         String?
+  detectedAt       DateTime    @default(now())
+  status           EventStatus @default(OPEN)
+  investigatedById String?
+  investigatedBy   User?       @relation("EventInvestigator", fields: [investigatedById], references: [id])
+  resolutionNotes  String?
+  resolvedAt       DateTime?
+
+  @@index([severity, detectedAt])
+  @@index([eventType])
+  @@index([status])
+  @@index([sensorId, detectedAt])
+}
+
+model ModelMetrics {
+  id             String   @id @default(cuid())
+  modelName      String
+  accuracy       Float?
+  precision      Float
+  recall         Float
+  f1Score        Float
+  trainedAt      DateTime
+  datasetVersion String
+  details        Json?
+  createdAt      DateTime @default(now())
+
+  @@index([trainedAt])
+}
+
+model ReplayRecord {
+  id             String   @id @default(cuid())
+  sensorId       String
+  sensor         Sensor   @relation(fields: [sensorId], references: [sensorId], onDelete: Cascade)
+  sequenceNumber Int
+  timestamp      DateTime
+  receivedAt     DateTime @default(now())
+
+  /// The atomic replay guard: concurrent duplicates fail on this constraint, exactly one INSERT wins.
+  @@unique([sensorId, sequenceNumber])
+  @@index([timestamp])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actorLabel String
+  action     String
+  targetType String
+  targetId   String?
+  details    Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+  @@index([actorId])
+}

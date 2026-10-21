@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+tests
+credentials.json
+.sim_state.json
+.env
